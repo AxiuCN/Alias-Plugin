@@ -1,0 +1,6 @@
+# 别名数据热重载
+reload:
+  # 是否监听 data/ 目录并在数据变更后自动重建索引
+  watch: true
+  # 文件事件防抖窗口（毫秒）
+  debounceMs: 500

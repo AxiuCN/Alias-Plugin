@@ -1,0 +1,8 @@
+# Alias-Plugin 配置模板（锅巴保存时按 ${变量} 替换，注释完整保留）
+# 占位符用下划线（锅巴 field 用点分路径），运行时文件为 config/config.yaml
+
+reload:
+  # 是否监听 data/ 目录并在数据变更后自动重建索引
+  watch: ${reload_watch}
+  # 文件事件防抖窗口（毫秒）
+  debounceMs: ${reload_debounceMs}

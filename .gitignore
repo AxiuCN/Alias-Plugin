@@ -1,0 +1,28 @@
+# 依赖
+node_modules/
+
+# 日志
+*.log
+logs/
+
+# 操作系统临时文件
+.DS_Store
+Thumbs.db
+
+# 编辑器配置
+.vscode/
+.idea/
+
+# Claude Code / DeepSeek Harness 工作区
+.claude/
+.dsh/
+CLAUDE.md
+
+# 本机工作区与部署（不入库）
+docs/private/
+
+# 运行时配置（参考模板 config.yaml.example 入库）
+config/config.yaml
+
+# 套件临时产物
+test/.test-tmp/

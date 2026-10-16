@@ -1,0 +1,15 @@
+{
+  "name": "alias-plugin",
+  "version": "0.1.0",
+  "description": "TRSS-Yunzai v3 公共别名服务：多游戏 / 多实体别名查询与原神星铁绝区零别名数据维护",
+  "author": "阿修Axiu",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "test": "node test/run.mjs",
+    "sync": "node scripts/sync-alias.mjs"
+  },
+  "dependencies": {
+    "yaml": "^2.4.5"
+  }
+}
