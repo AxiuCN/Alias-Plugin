@@ -25,7 +25,7 @@ const pluginRoot = path.resolve(__dirname, '..')
 /** bot 根（app/）：既用于定位其它插件，也用于兜底解析 yaml 依赖 */
 const botRoot = path.resolve(pluginRoot, '..', '..')
 
-/** 上游别名文件清单：一个文件 = 一个 (游戏, 实体) 的数据来源（路径相对 bot 根 app/） */
+/** 上游别名文件清单：一个文件 = 一个 (游戏, 实体) 的数据来源（路径相对 bot 根 app/；src 只用于本脚本内的日志与指纹归类，不进入产物） */
 const UPSTREAM = [
   { src: 'miao', game: 'gi', entity: 'character', rel: 'plugins/miao-plugin/resources/meta-gs/character/alias.js', exports: ['alias'] },
   { src: 'miao', game: 'gi', entity: 'weapon', rel: 'plugins/miao-plugin/resources/meta-gs/weapon/alias.js', exports: ['alias', 'abbr'] },
@@ -154,12 +154,11 @@ function sha256 (buffer) {
  *  合并与输出
  * ============================================================ */
 
-/** 条目排序键：game → entity → src → 归一键 → 原文，保证输出稳定 */
+/** 条目排序键：game → entity → 归一键 → 原文，保证输出稳定（同一输入必得同一字节） */
 function sortEntries (list) {
   return list.slice().sort((a, b) =>
     a.game.localeCompare(b.game)
     || a.entity.localeCompare(b.entity)
-    || a.src.localeCompare(b.src)
     || normalizeKey(a.canonical).localeCompare(normalizeKey(b.canonical))
     || a.canonical.localeCompare(b.canonical, 'zh-Hans-CN')
     || a.alias.localeCompare(b.alias, 'zh-Hans-CN'))
@@ -246,62 +245,52 @@ async function main () {
     console.log(`· ${item.rel} → ${stats.entries - before} 条（${item.game}/${item.entity}/${item.src}）`)
   }
 
-  // 自维护层：与同名的上游条目**合并别名**（不覆盖）——上游已维护的俗称不会因为并入而消失
+  // 自维护层：与同名标准名的上游条目**合并别名**（不覆盖）——上游已维护的俗称不会因为并入而消失
   const custom = readCustom()
   const customEntries = []
   const customStats = { records: 0, entries: 0 }
   for (const [game, entities] of Object.entries(custom)) {
     if (game.startsWith('$')) continue
     for (const [entity, table] of Object.entries(entities || {})) {
-      customEntries.push(...toEntries(table, { game, entity, src: 'custom' }, customStats))
+      customEntries.push(...toEntries(table, { game, entity }, customStats))
     }
   }
 
-  // 按 (游戏, 实体, 标准名) 归并：custom 与上游同名 → 别名合并为一条（标注 src = custom）
+  // 按 (游戏, 实体, 标准名) 归并别名（来源不参与，产物里也没有来源字段）
   const byCanonical = new Map()
-  for (const item of all) {
-    const id = `${item.game}|${item.entity}|${normalizeKey(item.canonical)}`
-    const prev = byCanonical.get(id)
-    if (prev) prev.aliases.push(item.alias)
-    else byCanonical.set(id, { ...item, aliases: [item.alias], srcs: [item.src] })
-  }
   let mergedWithUpstream = 0
-  for (const item of customEntries) {
+  const addEntry = (item, isCustom) => {
     const id = `${item.game}|${item.entity}|${normalizeKey(item.canonical)}`
     const prev = byCanonical.get(id)
     if (prev) {
       prev.aliases.push(item.alias)
-      prev.srcs.push(item.src)
-      mergedWithUpstream++
+      if (isCustom) mergedWithUpstream++
     } else {
-      byCanonical.set(id, { ...item, aliases: [item.alias], srcs: [item.src] })
+      byCanonical.set(id, { canonical: item.canonical, game: item.game, entity: item.entity, aliases: [item.alias] })
     }
   }
+  for (const item of all) addEntry(item, false)
+  for (const item of customEntries) addEntry(item, true)
 
   const kept = []
   for (const item of byCanonical.values()) {
     for (const alias of splitAliases(item.aliases, item.canonical)) {
-      kept.push({
-        canonical: item.canonical,
-        alias,
-        game: item.game,
-        entity: item.entity,
-        src: item.srcs.includes('custom') ? 'custom' : item.src
-      })
+      kept.push({ canonical: item.canonical, alias, game: item.game, entity: item.entity })
     }
   }
   const entries = sortEntries(kept)
   console.log(`· data/custom.json → ${customEntries.length} 条（其中 ${mergedWithUpstream} 条与上游同名，已合并别名）`)
 
-  // 去重（同 四元组 完全一致）
+  // 去重（同 游戏/实体/标准名/别名 完全一致）
   const seen = new Set()
   const final = []
   for (const e of entries) {
-    const key = `${e.game}|${e.entity}|${e.src}|${normalizeKey(e.canonical)}|${normalizeKey(e.alias)}`
+    const key = `${e.game}|${e.entity}|${normalizeKey(e.canonical)}|${normalizeKey(e.alias)}`
     if (seen.has(key)) continue
     seen.add(key)
     final.push(e)
   }
+  const canonicalCount = new Set(final.map(e => `${e.game}|${e.entity}|${normalizeKey(e.canonical)}`)).size
 
   const aliasDoc = {
     $comment: '由 scripts/sync-alias.mjs 生成，请勿手工编辑；自维护别名改 data/custom.json',
@@ -315,7 +304,8 @@ async function main () {
     generatedAt: aliasDoc.generatedAt,
     upstream: upstreamMeta,
     counts: {
-      entries: final.length,
+      edges: final.length,
+      canonical: canonicalCount,
       customMergedWithUpstream: mergedWithUpstream
     }
   }
@@ -324,7 +314,7 @@ async function main () {
   const sourceJson = `${JSON.stringify(sourceDoc, null, 2)}\n`
 
   if (checkOnly) {
-    // 只比对「内容」：entries 与上游指纹。generatedAt 每次都会变，不参与比对。
+    // 只比对「内容」：别名边表与上游指纹。generatedAt 每次都会变，不参与比对。
     const aliasChanged = compareContent(path.join(dataDir, 'alias.json'), aliasDoc, doc => doc.entries)
     const sourceChanged = compareContent(path.join(dataDir, 'source.json'), sourceDoc, doc => doc.upstream)
     const changed = [aliasChanged && 'alias.json', sourceChanged && 'source.json'].filter(Boolean)
@@ -339,7 +329,7 @@ async function main () {
   fs.mkdirSync(dataDir, { recursive: true })
   fs.writeFileSync(path.join(dataDir, 'alias.json'), aliasJson, 'utf8')
   fs.writeFileSync(path.join(dataDir, 'source.json'), sourceJson, 'utf8')
-  console.log(`\n写出 data/alias.json：${final.length} 条映射`)
+  console.log(`\n写出 data/alias.json：${final.length} 条映射 / ${canonicalCount} 个标准名`)
   console.log('写出 data/source.json：上游指纹')
   if (warnings.length) console.log(`\n告警 ${warnings.length} 条（见上）`)
 }

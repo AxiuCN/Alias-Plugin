@@ -1,5 +1,5 @@
 /**
- * 游戏 / 实体 / 来源的唯一定义处（纯常量，零 I/O）
+ * 游戏 / 实体 / 名字档次的唯一定义处（纯常量与纯函数，零 I/O）
  *
  * 其他模块一律从这里取，不在别处再写字面量。
  */
@@ -24,32 +24,55 @@ export const GAME_IDS = Object.keys(GAMES)
 export const ENTITY_IDS = Object.keys(ENTITIES)
 
 /**
- * 别名来源
+ * 名字档次（唯一的优先级依据）
  *
- * - `miao`  — miao-plugin 的别名文件（原神 / 星铁的角色、武器、圣遗物）
- * - `zzz`   — ZZZ-Plugin 的别名文件（绝区零的角色）
- * - `custom`— 本插件自维护的别名（由其他插件解耦并入，入库）
+ * 数值越小越优先，**只看标准名是中文还是外文**，不看它来自哪个来源、
+ * 也不看本次是按标准名还是按别名命中的：
  *
- * `miao` 与 `zzz` 同为**上游**、只读；`custom` 为本插件自有数据。
- * 冲突时 `custom` 覆盖上游（逐条目判定，见 model/AliasIndex.js）。
+ *   1. `zh-canonical` 中文原名——中文标准名
+ *   2. `xx-canonical` 外文原名——非中文标准名
+ *
+ * 别名（任何非标准名的写法）参与竞争时，用它指向的**标准名**的档次。
  */
-export const SOURCES = {
-  miao: { id: 'miao', label: 'miao-plugin', priority: 10, upstream: true },
-  zzz: { id: 'zzz', label: 'ZZZ-Plugin', priority: 10, upstream: true },
-  custom: { id: 'custom', label: '本插件自维护', priority: 20, upstream: false }
+export const TIERS = {
+  'zh-canonical': { id: 'zh-canonical', level: 1, label: '中文原名' },
+  'xx-canonical': { id: 'xx-canonical', level: 2, label: '外文原名' }
 }
 
-/** 来源 ID 列表 */
-export const SOURCE_IDS = Object.keys(SOURCES)
+/** 档次 ID 列表（按优先级） */
+export const TIER_IDS = Object.keys(TIERS)
 
-/** 取来源优先级（未知来源按最低处理） */
-export function sourcePriority (id) {
-  return SOURCES[id]?.priority ?? 0
+/** 是否含中日韩表意文字 */
+const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
+
+/**
+ * 判断一个名字是否算「中文原名」
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function isZhName (value) {
+  return CJK_RE.test(String(value ?? ''))
 }
 
-/** 是否为已知来源 */
-export function isKnownSource (id) {
-  return Object.prototype.hasOwnProperty.call(SOURCES, id)
+/**
+ * 取**标准名**的档次
+ *
+ * 档次描述的是「标准名本身是中文还是外文」，与它由哪个写法命中无关——
+ * 查别名时同样按被指向的标准名分档（`matchedBy` 另行说明是按标准名还是别名命中的）。
+ * @param {string} canonical - 标准名
+ * @returns {string} 档次 ID
+ */
+export function tierOf (canonical) {
+  return isZhName(canonical) ? 'zh-canonical' : 'xx-canonical'
+}
+
+/**
+ * 取档次等级（数值越小越优先；未知档次按最低）
+ * @param {string} id
+ * @returns {number}
+ */
+export function tierLevel (id) {
+  return TIERS[id]?.level ?? 99
 }
 
 /** 校验游戏 ID；不合法返回空串 */

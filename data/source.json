@@ -1,7 +1,7 @@
 {
   "$comment": "上游别名文件的内容指纹，供同步脚本 / GitHub Action 判定是否需要重新生成",
   "version": 1,
-  "generatedAt": "2026-10-15T14:36:21.816Z",
+  "generatedAt": "2026-10-16T11:45:02.475Z",
   "upstream": [
     {
       "src": "miao",
@@ -61,7 +61,8 @@
     }
   ],
   "counts": {
-    "entries": 2438,
+    "edges": 2438,
+    "canonical": 602,
     "customMergedWithUpstream": 14
   }
 }

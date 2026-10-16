@@ -2,10 +2,11 @@
  * 别名数据文件读取（数据层，只读）
  *
  * 数据文件（均入库，随仓库分发）：
- *   data/alias.json   运行时唯一真相：上游（miao + ZZZ）与本插件自维护合并后的别名表
- *   data/source.json  来源元数据：各上游文件的内容哈希，供 GitHub Action 判定是否需要重新生成
+ *   data/alias.json   运行时唯一真相：上游与本插件自维护合并后的别名边表
+ *   data/source.json  上游指纹（各上游文件的 sha256），供 GitHub Action 判定是否需要重新生成
  *
  * 生成物一律由 `scripts/sync-alias.mjs` 产出，运行期**只读不写**。
+ * 来源不参与任何判定，因此边表里**没有** src 字段。
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -79,14 +80,13 @@ export function readAliasEntries () {
       canonical,
       alias,
       game: String(item.game ?? ''),
-      entity: String(item.entity ?? ''),
-      src: String(item.src ?? '')
+      entity: String(item.entity ?? '')
     })
   }
   return { entries, reason: '' }
 }
 
-/** 读来源元数据（供状态展示与 Action 比对；读不出来返回 null） */
+/** 读上游指纹（供状态展示与 Action 比对；读不出来返回 null） */
 export function readSourceMeta () {
   const ret = readJsonFile(sourceFilePath())
   return ret.ok ? ret.data : null

@@ -2,23 +2,25 @@
  * 别名索引（纯内存结构，零 I/O）
  *
  * 条目形状：
- *   `{ key, standard, matched, canonical, alias, game, entity, src, priority }`
+ *   `{ key, standard, matched, tier, canonical, alias, game, entity }`
  *   - `key`      本条目的索引键（归一化后）
  *   - `standard` 标准名（**永远是标准名**，查询结果给调用方的就是它）
- *   - `matched`  命中的另一个写法（标准名 ↔ 别名 的另一端）
- *   - `canonical` / `alias` 为输入原文，仅供溯源
+ *   - `matched`  命中的另一个写法
+ *   - `tier`     **标准名**的档次（见 components/sources.js）：中文原名 > 外文原名
+ *   - `matchedBy` 本次是按标准名还是按别名命中的
+ *   - `canonical` / `alias` 为输入原文，仅供排序
  * 正反双向各存一条，因此任一写法都能查到，且结果字段口径一致。
  *
- * 覆盖语义（逐条目判定）：
- *   同一 `(归一键, game, entity)` 下若存在**多个标准名**，只保留来源优先级最高的那批
- *   —— 即「自维护别名覆盖上游别名」。同批内的多个标准名共存（如何取舍归调用方）。
+ * 冲突取舍（唯一的优先级依据是**标准名的档次**，与来源无关）：
+ *   同一 `(归一键, game, entity)` 下有多个标准名时，只保留档次最高的那批；
+ *   同档多个标准名共存，如何取舍归调用方。
  */
 import { normalizeKey } from '../components/normalize.js'
-import { isKnownSource, normalizeEntity, normalizeGame, sourcePriority } from '../components/sources.js'
+import { normalizeEntity, normalizeGame, tierLevel, tierOf } from '../components/sources.js'
 
 /**
  * 构建索引
- * @param {Array} rawEntries - `{ canonical, alias, game, entity, src }[]`
+ * @param {Array} rawEntries - `{ canonical, alias, game, entity }[]`
  * @returns {{map: Map<string, Array>, entries: Array, skipped: number, deduped: number}}
  *   map：归一键 → 条目[]；entries：双向展开后的有效条目
  */
@@ -31,10 +33,9 @@ export function buildIndex (rawEntries) {
   for (const raw of Array.isArray(rawEntries) ? rawEntries : []) {
     const game = normalizeGame(raw?.game)
     const entity = normalizeEntity(raw?.entity)
-    const src = isKnownSource(raw?.src) ? raw.src : ''
     const canonical = String(raw?.canonical ?? '').trim()
     const alias = String(raw?.alias ?? '').trim()
-    if (!game || !entity || !src || !canonical || !alias) {
+    if (!game || !entity || !canonical || !alias) {
       skipped++
       continue
     }
@@ -47,18 +48,19 @@ export function buildIndex (rawEntries) {
       continue
     }
 
-    const id = `${game}|${entity}|${src}|${cKey}|${aKey}`
+    const id = `${game}|${entity}|${cKey}|${aKey}`
     if (dedup.has(id)) {
       deduped++
       continue
     }
     dedup.add(id)
 
-    const base = { canonical, alias, game, entity, src, priority: sourcePriority(src) }
-    // 正向：用标准名查到别名；反向：用别名查到标准名。
-    // 两条都带 `standard`（永远是标准名）与 `matched`（本条命中的那个写法）。
-    entries.push({ ...base, key: cKey, standard: canonical, matched: alias })
-    entries.push({ ...base, key: aKey, standard: canonical, matched: alias })
+    // 档次描述标准名本身（中文原名 > 外文原名），正反两行一致；
+    // 正向行表示「本次按标准名命中」，反向行的 key 是别名
+    const base = { canonical, alias, game, entity }
+    const tier = tierOf(canonical)
+    entries.push({ ...base, key: cKey, standard: canonical, matched: alias, tier, matchedBy: 'canonical' })
+    entries.push({ ...base, key: aKey, standard: canonical, matched: alias, tier, matchedBy: 'alias' })
   }
 
   const map = new Map()
@@ -76,7 +78,7 @@ export function buildIndex (rawEntries) {
  * @param {object} index - buildIndex 的返回值
  * @param {string} keyword
  * @param {{game?: string, entity?: string}} [filter]
- * @returns {Array} 条目[]（按优先级降序、标准名升序）
+ * @returns {Array} 条目[]（按档次升序 = 优先级降序，再按标准名、命中写法排序）
  */
 export function query (index, keyword, filter = {}) {
   const key = normalizeKey(keyword)
@@ -87,25 +89,35 @@ export function query (index, keyword, filter = {}) {
   const list = (index.map.get(key) || []).filter(item =>
     (!game || item.game === game) && (!entity || item.entity === entity))
 
-  // 覆盖：同一 (键, 游戏, 实体) 下按标准名取优先级最高的一批；
-  // 同一标准名的多条（多个别名）**全部保留**——取最高优先级只影响标准名之间的取舍。
-  const groups = new Map()
+  // 同一标准名的多条（多个别名）全部保留；标准名之间按档次取舍
+  // 取舍**限定在同一个 (游戏, 实体) 内**：跨游戏 / 跨实体的同名写法互不干扰
+  const scopes = new Map()
   for (const item of list) {
-    const id = `${item.game}|${item.entity}|${normalizeKey(item.standard)}`
-    const group = groups.get(id)
-    if (group) group.push(item)
-    else groups.set(id, [item])
+    const scopeId = `${item.game}|${item.entity}`
+    const scope = scopes.get(scopeId)
+    const groupId = normalizeKey(item.standard)
+    if (scope) {
+      const group = scope.get(groupId)
+      if (group) group.push(item)
+      else scope.set(groupId, [item])
+    } else {
+      scopes.set(scopeId, new Map([[groupId, [item]]]))
+    }
   }
-  const maxPriority = groups.size
-    ? Math.max(...[...groups.values()].map(g => Math.max(...g.map(i => i.priority))))
-    : 0
 
-  return [...groups.values()]
-    .filter(group => Math.max(...group.map(i => i.priority)) === maxPriority)
-    .flat()
-    .sort((a, b) =>
-      a.standard.localeCompare(b.standard, 'zh-Hans-CN')
-      || a.matched.localeCompare(b.matched, 'zh-Hans-CN'))
+  const groupLevel = (group) => Math.min(...group.map(i => tierLevel(i.tier)))
+  const out = []
+  for (const scope of scopes.values()) {
+    const bestLevel = Math.min(...[...scope.values()].map(groupLevel))
+    for (const group of scope.values()) {
+      if (groupLevel(group) === bestLevel) out.push(...group)
+    }
+  }
+
+  return out.sort((a, b) =>
+    tierLevel(a.tier) - tierLevel(b.tier)
+    || a.standard.localeCompare(b.standard, 'zh-Hans-CN')
+    || a.matched.localeCompare(b.matched, 'zh-Hans-CN'))
 }
 
 /**

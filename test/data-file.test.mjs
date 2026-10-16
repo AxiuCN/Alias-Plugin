@@ -15,16 +15,17 @@ const c = checker()
 {
   const dir = writeFixture('data-ok', {
     entries: [
-      { canonical: '胡桃', alias: '核桃', game: 'gi', entity: 'character', src: 'miao' },
-      { canonical: '胡桃', alias: '', game: 'gi', entity: 'character', src: 'miao' },
-      { canonical: '', alias: '空', game: 'gi', entity: 'character', src: 'miao' },
-      { canonical: '钟离', alias: '岩神', game: 'gi', entity: 'character', src: 'miao' }
+      { canonical: '胡桃', alias: '核桃', game: 'gi', entity: 'character' },
+      { canonical: '胡桃', alias: '', game: 'gi', entity: 'character' },
+      { canonical: '', alias: '空', game: 'gi', entity: 'character' },
+      { canonical: '钟离', alias: '岩神', game: 'gi', entity: 'character' }
     ]
   })
   process.env.ALIAS_DATA_DIR = dir
   const ret = AliasFile.readAliasEntries()
   c.check('正常读取', ret.reason === '' && ret.entries.length === 2, `entries=${ret.entries.length}`)
   c.check('空字段条目被丢弃', !ret.entries.some(x => !x.canonical || !x.alias))
+  c.check('只取四个字段（不含来源）', ret.entries.every(x => Object.keys(x).sort().join(',') === 'alias,canonical,entity,game'))
   c.check('hasAliasData 为真', AliasFile.hasAliasData() === true)
   c.check('mtime 可读', AliasFile.aliasFileMtime() > 0)
 }

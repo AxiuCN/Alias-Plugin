@@ -12,8 +12,12 @@ const service = await import(mod('modules/AliasService.js'))
 const c = checker()
 
 const status = service.status()
-c.check('数据非空', status.entries > 0, `entries=${status.entries} / keywords=${status.keywords}`)
-c.check('三种来源齐备或至少含上游与自维护之一', Object.keys(status.bySrc).length >= 1, JSON.stringify(status.bySrc))
+c.check('数据非空', status.entries > 0, `entries=${status.entries} / canonical=${status.canonical} / keywords=${status.keywords}`)
+c.check('按游戏分布齐备', Object.keys(status.byGame).length >= 1, JSON.stringify(status.byGame))
+c.check('档次分布只含两档且合计等于映射行数',
+  Object.keys(status.byTier).every(k => ['zh-canonical', 'xx-canonical'].includes(k))
+  && Object.values(status.byTier).reduce((a, b) => a + b, 0) === status.entries / 2,
+  JSON.stringify(status.byTier))
 c.check('状态不含服务器绝对路径', !JSON.stringify(status).includes(':\\') && !JSON.stringify(status).includes('/plugins/'))
 
 // ---- 命中 ----
@@ -21,12 +25,15 @@ c.check('状态不含服务器绝对路径', !JSON.stringify(status).includes(':
   const ret = service.lookup('胡桃')
   c.check('标准名精确命中', ret.status === 'exact' && ret.canonical === '胡桃', `${ret.status}/${ret.canonical}`)
   c.check('命中结果带候选明细', Array.isArray(ret.candidates) && ret.candidates.length >= 1)
-  c.check('候选带来源与匹配方式', ret.candidates[0].src !== '' && ['canonical', 'alias'].includes(ret.candidates[0].matchedBy))
+  c.check('候选带档次与匹配方式',
+    ret.candidates[0].tier === 'zh-canonical' && ret.candidates[0].tierLabel === '中文原名'
+    && ret.candidates[0].matchedBy === 'canonical')
 }
 {
   const ret = service.lookup('核桃')
   c.check('别名反查标准名', ret.candidates.some(x => x.canonical === '胡桃'), `${ret.status}/${JSON.stringify(ret.candidates.map(x => x.canonical))}`)
-  c.check('反查时 matchedBy 标为 alias', ret.candidates.find(x => x.canonical === '胡桃')?.matchedBy === 'alias')
+  c.check('反查时 matchedBy 标为 alias 而档次仍是标准名的',
+    ret.candidates[0].matchedBy === 'alias' && ret.candidates[0].tier === 'zh-canonical')
 }
 
 // ---- 未命中 ----
@@ -58,16 +65,21 @@ c.check('undefined 关键词未命中且不报错', service.lookup(undefined).st
   c.check('未命中关键词只回原词', JSON.stringify(service.variants('不存在xyz')) === JSON.stringify(['不存在xyz']))
 }
 
-// ---- list ----
+// ---- list（按标准名归组） ----
 {
   const giChar = service.list({ game: 'gi', entity: 'character' })
   c.check('清单按游戏/实体过滤', giChar.length > 0 && giChar.every(x => x.game === 'gi' && x.entity === 'character'))
+  c.check('清单按标准名归组，别名是数组', giChar.every(x => typeof x.canonical === 'string' && Array.isArray(x.alias) && x.alias.length > 0))
+  c.check('同一标准名只出现一次', new Set(giChar.map(x => x.canonical)).size === giChar.length)
+  c.check('清单带标准名档次', giChar.every(x => ['zh-canonical', 'xx-canonical'].includes(x.tier)))
   c.check('清单可限条数', service.list({ limit: 5 }).length === 5)
-  c.check('清单来源过滤', service.list({ src: 'custom' }).every(x => x.src === 'custom'))
   c.check('清单是副本（改动不污染索引）', (() => {
     const a = service.list({ limit: 1 })
+    const before = a[0].canonical
     a[0].canonical = '被改坏了'
-    return service.list({ limit: 1 })[0].canonical !== '被改坏了'
+    a[0].alias.push('被塞进来的别名')
+    const again = service.list({ limit: 1 })[0]
+    return again.canonical === before && !again.alias.includes('被塞进来的别名')
   })())
 }
 

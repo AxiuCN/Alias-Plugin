@@ -2,14 +2,16 @@
  * 公共别名服务（业务出口）
  *
  * 对外只提供查询：命中、候选、变体、清单、状态与手动重建。
- * **不提供写入接口** —— 别名数据的增改由数据文件 + `scripts/sync-alias.mjs` 完成，
+ * **不提供写入接口** —— 别名数据的增改由 `data/custom.json` + `scripts/sync-alias.mjs` 完成，
  * 后期由 GitHub Action 自动同步上游。
+ *
+ * 优先级的唯一依据是**名字档次**（中文原名 > 外文原名 > 别名），与来源无关。
  *
  * 降级契约：数据缺失 / 解析失败 / 结构异常，一律返回「未命中」并 `logger.warn`，
  * **不抛错、不阻断调用方加载**。
  */
 import { normalizeKey } from '../components/normalize.js'
-import { normalizeEntity, normalizeGame } from '../components/sources.js'
+import { TIERS, normalizeEntity, normalizeGame, tierLevel } from '../components/sources.js'
 import { aliasFileMtime, readAliasEntries, readSourceMeta } from '../model/AliasFile.js'
 import { buildIndex, query, variantsOf } from '../model/AliasIndex.js'
 import { startWatch, stopWatch, watchState } from './HotReload.js'
@@ -47,6 +49,13 @@ export function ensureIndex () {
   return cache.index
 }
 
+/** 标准名去重数（按 游戏 + 实体 + 归一化标准名） */
+function countCanonical (index) {
+  const set = new Set()
+  for (const item of index.entries) set.add(`${item.game}|${item.entity}|${normalizeKey(item.standard)}`)
+  return set.size
+}
+
 /** 同步构建索引（读盘 + 建表，无 await → 无竞态） */
 function build () {
   const { entries, reason } = readAliasEntries()
@@ -59,9 +68,8 @@ function build () {
   if (reason) {
     logger?.warn(`[Alias] 别名数据不可用（${reason}），查询一律返回未命中；请检查 data/alias.json 或执行 pnpm sync`)
   } else {
-    const meta = readSourceMeta()
-    const when = meta?.generatedAt ? `，生成于 ${meta.generatedAt}` : ''
-    logger?.info(`[Alias] 别名表已加载：${index.entries.length} 条映射 / ${index.map.size} 个关键词${when}`)
+    const when = readSourceMeta()?.generatedAt
+    logger?.info(`[Alias] 别名表已加载：${index.entries.length} 条映射 / ${countCanonical(index)} 个标准名${when ? `，生成于 ${when}` : ''}`)
     if (index.skipped) logger?.warn(`[Alias] 跳过非法条目 ${index.skipped} 条`)
   }
   return index
@@ -82,7 +90,7 @@ export function reload () {
  *
  * 只回事实，不替调用方决定怎么用：
  * - `exact`    唯一标准名
- * - `ambiguous` 多个标准名（`candidates` 给出全部）
+ * - `ambiguous` 多个标准名（`candidates` 给出全部，已按档次排序）
  * - `none`     未命中
  * @param {string} keyword
  * @param {{game?: string, entity?: string}} [opts] - 可选限定游戏 / 实体
@@ -110,21 +118,33 @@ export function lookup (keyword, opts = {}) {
     return { ...empty, normalized }
   }
 
-  // 同一标准名可能命中多条（多来源），归并成候选
+  // 同一标准名可能命中多条（多个别名）→ 归并成候选，档次取该标准名里最高的那条
   const candidates = []
-  const seen = new Set()
+  const seen = new Map()
   for (const item of hits) {
     const key = normalizeKey(item.standard)
-    if (seen.has(key)) continue
-    seen.add(key)
-    candidates.push({
+    const prev = seen.get(key)
+    if (prev) {
+      if (tierLevel(item.tier) < tierLevel(prev.tier)) {
+        prev.tier = item.tier
+        prev.tierLabel = TIERS[item.tier]?.label || ''
+      }
+      continue
+    }
+    const candidate = {
       canonical: item.standard,
       game: item.game,
       entity: item.entity,
-      src: item.src,
-      matchedBy: normalizeKey(item.standard) === normalized ? 'canonical' : 'alias'
-    })
+      tier: item.tier,
+      tierLabel: TIERS[item.tier]?.label || '',
+      matchedBy: item.matchedBy
+    }
+    seen.set(key, candidate)
+    candidates.push(candidate)
   }
+  candidates.sort((a, b) =>
+    tierLevel(a.tier) - tierLevel(b.tier)
+    || a.canonical.localeCompare(b.canonical, 'zh-Hans-CN'))
 
   if (candidates.length === 1) {
     stats.hits++
@@ -149,25 +169,39 @@ export function variants (keyword, opts = {}) {
 }
 
 /**
- * 别名条目清单
- * @param {{game?: string, entity?: string, src?: string, limit?: number}} [opts]
- * @returns {Array}
+ * 别名清单：**按标准名归组**，别名给数组
+ * @param {{game?: string, entity?: string, limit?: number}} [opts]
+ * @returns {Array<{canonical: string, alias: string[], game: string, entity: string, tier: string}>}
  */
 export function list (opts = {}) {
   const index = ensureIndex()
   const game = opts.game ? normalizeGame(opts.game) : ''
   const entity = opts.entity ? normalizeEntity(opts.entity) : ''
-  const src = String(opts.src ?? '').trim()
 
-  let out = index.entries
-  if (game) out = out.filter(i => i.game === game)
-  if (entity) out = out.filter(i => i.entity === entity)
-  if (src) out = out.filter(i => i.src === src)
+  const groups = new Map()
+  for (const item of index.entries) {
+    if (game && item.game !== game) continue
+    if (entity && item.entity !== entity) continue
+    // 只按正向行归组（反向往的 key 是别名）
+    if (item.key !== normalizeKey(item.canonical)) continue
+    const id = `${item.game}|${item.entity}|${normalizeKey(item.standard)}`
+    const group = groups.get(id)
+    if (group) {
+      if (!group.alias.includes(item.matched)) group.alias.push(item.matched)
+    } else {
+      groups.set(id, {
+        canonical: item.standard,
+        alias: [item.matched],
+        game: item.game,
+        entity: item.entity,
+        tier: item.tier
+      })
+    }
+  }
 
   const limit = Number(opts.limit)
-  const sliced = Number.isFinite(limit) && limit > 0 ? out.slice(0, limit) : out.slice()
-  // 返回副本：调用方改动结果不得污染索引
-  return sliced.map(i => ({ ...i }))
+  const out = [...groups.values()].map(g => ({ ...g, alias: g.alias.slice() }))
+  return Number.isFinite(limit) && limit > 0 ? out.slice(0, limit) : out
 }
 
 /**
@@ -176,27 +210,34 @@ export function list (opts = {}) {
  */
 export function status () {
   const index = ensureIndex()
-  const meta = readSourceMeta()
   const mtime = aliasFileMtime()
 
   const byGame = {}
-  const bySrc = {}
+  const byTier = {}
+  const canonical = new Set()
   for (const item of index.entries) {
     byGame[item.game] = (byGame[item.game] || 0) + 1
-    bySrc[item.src] = (bySrc[item.src] || 0) + 1
+    // 档次描述标准名，正反两行重复 → 只统计正向行，避免翻倍
+    if (item.matchedBy === 'canonical') byTier[item.tier] = (byTier[item.tier] || 0) + 1
+    canonical.add(`${item.game}|${item.entity}|${normalizeKey(item.standard)}`)
   }
 
   return {
     ok: !cache.error && index.entries.length > 0,
     error: cache.error,
+    /** 双向展开后的映射行数（标准名 ↔ 别名 各算一条） */
     entries: index.entries.length,
+    /** 标准名去重数 */
+    canonical: canonical.size,
+    /** 索引键数（归一化后的写法数） */
     keywords: index.map.size,
     skipped: index.skipped,
+    deduped: index.deduped,
     byGame,
-    bySrc,
+    byTier,
     builtAt: cache.builtAt,
     dataUpdatedAt: mtime ? new Date(mtime).toISOString() : '',
-    upstream: meta?.upstream || [],
+    upstream: readSourceMeta()?.upstream || [],
     stats: { ...stats },
     watch: watchState()
   }
@@ -215,3 +256,5 @@ export function stopReload () {
   watchHooked = false
   stopWatch()
 }
+
+export { TIERS }

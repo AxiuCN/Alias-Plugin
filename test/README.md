@@ -9,11 +9,11 @@
 | 套件 | 覆盖 | 前置 |
 |------|------|------|
 | `normalize.test.mjs` | 归一化与别名串拆分（纯函数） | 无 |
-| `index-build.test.mjs` | 索引构建、双向映射、来源优先级覆盖、游戏/实体隔离、变体生成 | 无 |
+| `index-build.test.mjs` | 索引构建、双向映射、档次取舍、游戏/实体隔离、变体生成 | 无 |
 | `data-file.test.mjs` | 数据文件读取与全部降级路径（夹具驱动） | 无 |
 | `service-api.test.mjs` | 对外契约：`lookup` 三态、过滤、`variants`、`list`、`status`、`reload` | `data/alias.json` |
 | `app-contract.test.mjs` | 分层契约：apps 单类导出、无命令注册、index.js 只装配 | 无 |
-| `smoke-imports.test.mjs` | 模块可加载与导出面、常量表口径 | 无 |
+| `smoke-imports.test.mjs` | 模块可加载与导出面、常量表口径（档次 / 中文名判定） | 无 |
 
 ## 公共设施（`_helper.mjs`）
 
