@@ -1,102 +1,88 @@
 /**
  * 公共别名服务（业务出口）
  *
- * 对外只提供查询：命中、候选、变体、清单、状态与手动重建。
- * **不提供写入接口** —— 别名数据的增改由 `data/custom.json` + `scripts/sync-alias.mjs` 完成，
- * 后期由 GitHub Action 自动同步上游。
+ * 运行期读本机数据，**没有共享生成物**：
+ *   miao / ZZZ 预设（位置 1）+ 仓库自带 `data/aliases.json`（位置 2）+ 实例自定义（位置 3）。
+ * 实例自定义别名是各实例私有数据，只在本机读取，绝不写入仓库文件。
  *
- * 优先级的唯一依据是**名字档次**（中文原名 > 外文原名 > 别名），与来源无关。
- *
- * 降级契约：数据缺失 / 解析失败 / 结构异常，一律返回「未命中」并 `logger.warn`，
- * **不抛错、不阻断调用方加载**。
+ * 对外只提供查询；归组、匹配之后怎么用是调用方的事。
+ * 降级契约：插件缺失 / 文件损坏 / 名字解析不到，一律跳过并告警，**不抛错、不阻断加载**。
  */
-import { normalizeKey } from '../components/normalize.js'
-import { TIERS, normalizeEntity, normalizeGame, tierLevel } from '../components/sources.js'
-import { aliasFileMtime, readAliasEntries, readSourceMeta } from '../model/AliasFile.js'
-import { buildIndex, query, variantsOf } from '../model/AliasIndex.js'
-import { startWatch, stopWatch, watchState } from './HotReload.js'
-
-/** 进程内索引缓存（同步构建，因此不存在「并发读到半成品」的窗口） */
-const cache = {
-  built: false,
-  index: null,
-  error: '',
-  builtAt: 0
-}
-
-/** 挂载数据文件监听（惰性一次，由 ensureIndex 触发） */
-let watchHooked = false
+import { readOverlayAliases, readMiaoCustomAliases, readPresetAliases } from '../model/AliasSources.js'
+import { POSITIONS, buildIndex, query, variantsOf } from '../model/AliasIndex.js'
+import { TIERS, normalizeEntity, normalizeGame, tierLevel } from '../components/entityNames.js'
 
 /** 观测计数（状态展示用） */
-const stats = {
-  lookups: 0,
-  hits: 0,
-  misses: 0,
-  ambiguous: 0,
-  reloads: 0
-}
+const stats = { lookups: 0, hits: 0, misses: 0, ambiguous: 0, rebuilds: 0 }
+
+/** 索引构建次数与耗时（状态用） */
+let lastBuild = { at: 0, costMs: 0 }
 
 /**
- * 确保索引已构建（同步，幂等）
- * @returns {object} 索引对象
- */
-export function ensureIndex () {
-  if (!cache.built) build()
-  if (!watchHooked) {
-    watchHooked = true
-    startWatch(reload)
-  }
-  return cache.index
-}
-
-/** 标准名去重数（按 游戏 + 实体 + 归一化标准名） */
-function countCanonical (index) {
-  const set = new Set()
-  for (const item of index.entries) set.add(`${item.game}|${item.entity}|${normalizeKey(item.standard)}`)
-  return set.size
-}
-
-/** 同步构建索引（读盘 + 建表，无 await → 无竞态） */
-function build () {
-  const { entries, reason } = readAliasEntries()
-  const index = buildIndex(entries)
-  cache.built = true
-  cache.index = index
-  cache.error = reason
-  cache.builtAt = Date.now()
-
-  if (reason) {
-    logger?.warn(`[Alias] 别名数据不可用（${reason}），查询一律返回未命中；请检查 data/alias.json 或执行 pnpm sync`)
-  } else {
-    const when = readSourceMeta()?.generatedAt
-    logger?.info(`[Alias] 别名表已加载：${index.entries.length} 条映射 / ${countCanonical(index)} 个标准名${when ? `，生成于 ${when}` : ''}`)
-    if (index.skipped) logger?.warn(`[Alias] 跳过非法条目 ${index.skipped} 条`)
-  }
-  return index
-}
-
-/**
- * 重建索引（数据文件变更后调用，也供外部手动调用）
- * @returns {{ok: boolean, error: string, count: number}}
- */
-export function reload () {
-  stats.reloads++
-  const index = build()
-  return { ok: !cache.error, error: cache.error, count: index.entries.length }
-}
-
-/**
- * 查询关键词命中的标准名
+ * 建索引
  *
- * 只回事实，不替调用方决定怎么用：
- * - `exact`    唯一标准名
- * - `ambiguous` 多个标准名（`candidates` 给出全部，已按档次排序）
- * - `none`     未命中
- * @param {string} keyword
- * @param {{game?: string, entity?: string}} [opts] - 可选限定游戏 / 实体
- * @returns {{status: string, canonical: string|null, candidates: Array, keyword: string, normalized: string}}
+ * **每次调用都重新读盘并合成**：别名表规模不大（几千条），而"绝不缓存过期数据"
+ * 比省这点开销重要得多——实例自定义别名文件随时可能被 miao 的命令改写，
+ * 重算天然就是热更新，不需要文件监听，也不会出现缓存的合法性判断。
  */
-export function lookup (keyword, opts = {}) {
+async function build () {
+  const started = Date.now()
+  const presets = await readPresetAliases()
+  const overlay = readOverlayAliases()
+  const custom = readMiaoCustomAliases()
+  const index = buildIndex({ presets: presets.records, overlay, custom })
+  const built = {
+    index,
+    loaded: presets.loaded,
+    counts: {
+      preset: presets.records.length,
+      overlay: overlay.length,
+      custom: custom.length
+    },
+    builtAt: Date.now()
+  }
+  lastBuild = { at: built.builtAt, costMs: Date.now() - started }
+  stats.rebuilds++
+  logger?.info(`[Alias] 别名表已加载：${index.standards.length} 个原名 / ${index.map.size} 个关键词（预设 ${presets.records.length} 条，自带 ${overlay.length} 条，实例自定义 ${custom.length} 条）`)
+  if (!presets.loaded.miao) logger?.warn('[Alias] 未找到 miao-plugin，别名数据为空；本插件不阻断其他插件加载')
+  if (index.skipped) logger?.warn(`[Alias] 跳过非法条目 ${index.skipped} 条`)
+  if (index.unresolvedCustom) logger?.warn(`[Alias] 实例自定义别名中 ${index.unresolvedCustom} 行未匹配到已收录的名字，已跳过`)
+  return built
+}
+
+/**
+ * 取当前别名表（每次重新合成，不做缓存）
+ * @returns {Promise<object>} 构建结果
+ */
+export async function ensureIndex () {
+  try {
+    return await build()
+  } catch (err) {
+    // 构建失败也必须给出可用的空表，绝不把异常抛给调用方
+    logger?.warn(`[Alias] 别名表构建失败，本次以空表运行：${err?.message || err}`)
+    return {
+      index: { map: new Map(), standards: [], skipped: 0, unresolvedCustom: 0 },
+      loaded: { miao: false, zzz: false },
+      counts: { preset: 0, overlay: 0, custom: 0 },
+      builtAt: Date.now(),
+      error: String(err?.message || err)
+    }
+  }
+}
+
+/** 重建（语义上就是重新读一遍；保留该出口便于调用方显式刷新） */
+export async function reload () {
+  const ret = await ensureIndex()
+  return { ok: !ret.error && ret.index.standards.length > 0, error: ret.error || '', count: ret.index.standards.length }
+}
+
+/**
+ * 查询关键词命中的原名
+ * @param {string} keyword
+ * @param {{game?: string, entity?: string}} [opts]
+ * @returns {Promise<{status: string, canonical: string|null, candidates: Array, keyword: string, normalized: string}>}
+ */
+export async function lookup (keyword, opts = {}) {
   stats.lookups++
   const text = String(keyword ?? '').trim()
   const empty = { status: 'none', canonical: null, candidates: [], keyword: text, normalized: '' }
@@ -105,46 +91,28 @@ export function lookup (keyword, opts = {}) {
     return empty
   }
 
-  const index = ensureIndex()
-  const filter = {
+  const { index } = await ensureIndex()
+  const hits = query(index, text, {
     game: opts.game ? normalizeGame(opts.game) : '',
     entity: opts.entity ? normalizeEntity(opts.entity) : ''
-  }
-  const hits = query(index, text, filter)
-  const normalized = normalizeKey(text)
+  })
 
   if (!hits.length) {
     stats.misses++
-    return { ...empty, normalized }
+    return empty
   }
 
-  // 同一标准名可能命中多条（多个别名）→ 归并成候选，档次取该标准名里最高的那条
-  const candidates = []
-  const seen = new Map()
-  for (const item of hits) {
-    const key = normalizeKey(item.standard)
-    const prev = seen.get(key)
-    if (prev) {
-      if (tierLevel(item.tier) < tierLevel(prev.tier)) {
-        prev.tier = item.tier
-        prev.tierLabel = TIERS[item.tier]?.label || ''
-      }
-      continue
-    }
-    const candidate = {
-      canonical: item.standard,
-      game: item.game,
-      entity: item.entity,
-      tier: item.tier,
-      tierLabel: TIERS[item.tier]?.label || '',
-      matchedBy: item.matchedBy
-    }
-    seen.set(key, candidate)
-    candidates.push(candidate)
-  }
-  candidates.sort((a, b) =>
-    tierLevel(a.tier) - tierLevel(b.tier)
-    || a.canonical.localeCompare(b.canonical, 'zh-Hans-CN'))
+  const normalized = hits[0].standard.name
+  const candidates = hits.map(hit => ({
+    canonical: hit.standard.name,
+    game: hit.standard.game,
+    entity: hit.standard.entity,
+    tier: hit.standard.tier,
+    tierLabel: TIERS[hit.standard.tier]?.label || '',
+    position: hit.standard.position,
+    positionLabel: positionLabel(hit.standard.position),
+    matchedBy: hit.matchedBy
+  }))
 
   if (candidates.length === 1) {
     stats.hits++
@@ -156,105 +124,85 @@ export function lookup (keyword, opts = {}) {
 }
 
 /**
- * 关键词的全部别名写法（原词 + 命中的另一端；第一个固定为原词）
+ * 关键词的全部写法（第一个固定为入参原文）
  * @param {string} keyword
  * @param {{game?: string}} [opts]
- * @returns {string[]}
+ * @returns {Promise<string[]>}
  */
-export function variants (keyword, opts = {}) {
-  const index = ensureIndex()
-  return variantsOf(index, keyword, {
-    game: opts.game ? normalizeGame(opts.game) : ''
-  })
+export async function variants (keyword, opts = {}) {
+  const { index } = await ensureIndex()
+  return variantsOf(index, keyword, { game: opts.game ? normalizeGame(opts.game) : '' })
 }
 
 /**
- * 别名清单：**按标准名归组**，别名给数组
+ * 别名清单：**按原名归组**，别名是数组
  * @param {{game?: string, entity?: string, limit?: number}} [opts]
- * @returns {Array<{canonical: string, alias: string[], game: string, entity: string, tier: string}>}
+ * @returns {Promise<Array<{canonical: string, alias: string[], game: string, entity: string, tier: string, position: number}>>}
  */
-export function list (opts = {}) {
-  const index = ensureIndex()
+export async function list (opts = {}) {
+  const { index } = await ensureIndex()
   const game = opts.game ? normalizeGame(opts.game) : ''
   const entity = opts.entity ? normalizeEntity(opts.entity) : ''
 
-  const groups = new Map()
-  for (const item of index.entries) {
-    if (game && item.game !== game) continue
-    if (entity && item.entity !== entity) continue
-    // 只按正向行归组（反向往的 key 是别名）
-    if (item.key !== normalizeKey(item.canonical)) continue
-    const id = `${item.game}|${item.entity}|${normalizeKey(item.standard)}`
-    const group = groups.get(id)
-    if (group) {
-      if (!group.alias.includes(item.matched)) group.alias.push(item.matched)
-    } else {
-      groups.set(id, {
-        canonical: item.standard,
-        alias: [item.matched],
-        game: item.game,
-        entity: item.entity,
-        tier: item.tier
-      })
-    }
+  const out = []
+  for (const standard of index.standards) {
+    if (game && standard.game !== game) continue
+    if (entity && standard.entity !== entity) continue
+    out.push({
+      canonical: standard.name,
+      alias: [...standard.aliases],
+      game: standard.game,
+      entity: standard.entity,
+      tier: standard.tier,
+      position: standard.position
+    })
   }
 
   const limit = Number(opts.limit)
-  const out = [...groups.values()].map(g => ({ ...g, alias: g.alias.slice() }))
   return Number.isFinite(limit) && limit > 0 ? out.slice(0, limit) : out
 }
 
 /**
- * 服务状态（自检用；不回显服务器绝对路径）
- * @returns {object}
+ * 服务自检（不回显服务器绝对路径、不回显实例私有数据内容）
+ * @returns {Promise<object>}
  */
-export function status () {
-  const index = ensureIndex()
-  const mtime = aliasFileMtime()
-
+export async function status () {
+  const built = await ensureIndex()
   const byGame = {}
+  const byEntity = {}
   const byTier = {}
-  const canonical = new Set()
-  for (const item of index.entries) {
-    byGame[item.game] = (byGame[item.game] || 0) + 1
-    // 档次描述标准名，正反两行重复 → 只统计正向行，避免翻倍
-    if (item.matchedBy === 'canonical') byTier[item.tier] = (byTier[item.tier] || 0) + 1
-    canonical.add(`${item.game}|${item.entity}|${normalizeKey(item.standard)}`)
+  const byPosition = {}
+  for (const standard of built.index.standards) {
+    byGame[standard.game] = (byGame[standard.game] || 0) + 1
+    byEntity[standard.entity] = (byEntity[standard.entity] || 0) + 1
+    byTier[standard.tier] = (byTier[standard.tier] || 0) + 1
+    const label = positionLabel(standard.position)
+    byPosition[label] = (byPosition[label] || 0) + 1
   }
-
   return {
-    ok: !cache.error && index.entries.length > 0,
-    error: cache.error,
-    /** 双向展开后的映射行数（标准名 ↔ 别名 各算一条） */
-    entries: index.entries.length,
-    /** 标准名去重数 */
-    canonical: canonical.size,
-    /** 索引键数（归一化后的写法数） */
-    keywords: index.map.size,
-    skipped: index.skipped,
-    deduped: index.deduped,
+    ok: !built.error && built.index.standards.length > 0,
+    error: built.error || '',
+    standards: built.index.standards.length,
+    keywords: built.index.map.size,
+    aliases: built.index.standards.reduce((sum, s) => sum + s.aliases.size, 0),
+    skipped: built.index.skipped,
+    unresolvedCustom: built.index.unresolvedCustom,
+    loaded: built.loaded,
+    counts: built.counts,
     byGame,
+    byEntity,
     byTier,
-    builtAt: cache.builtAt,
-    dataUpdatedAt: mtime ? new Date(mtime).toISOString() : '',
-    upstream: readSourceMeta()?.upstream || [],
-    stats: { ...stats },
-    watch: watchState()
+    byPosition,
+    builtAt: built.builtAt,
+    buildCostMs: lastBuild.costMs,
+    stats: { ...stats }
   }
 }
 
-/** 清空缓存（测试与手动干预用；下次查询会重建） */
-export function reset () {
-  cache.built = false
-  cache.index = null
-  cache.error = ''
-  cache.builtAt = 0
+/** 位置标签 */
+function positionLabel (position) {
+  const found = Object.entries(POSITIONS).find(([, value]) => value === position)
+  return found ? found[0] : `unknown(${position})`
 }
 
-/** 停止数据文件监听（测试收尾用） */
-export function stopReload () {
-  watchHooked = false
-  stopWatch()
-}
-
-export { TIERS }
+export { TIERS, POSITIONS }

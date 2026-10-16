@@ -1,10 +1,8 @@
 /**
  * 公共别名服务（apps 层能力出口）
  *
- * 本插件不接管任何聊天命令：这个类只做两件事——
- *   1. 让服务在框架加载插件时被装配一次（与其它插件同批 load）；
- *   2. 把查询能力挂到实例上，业务插件既可 `import` modules 直接调用，
- *      也可从 `Bot` 的插件列表里按 `name`（`Alias别名服务`）取到本实例。
+ * 本插件不接管任何聊天命令：这个类让服务随框架加载被装配一次，
+ * 并把查询能力挂到实例上（业务插件也可以直接 `import` modules 调用）。
  *
  * 无 `rule` / `task` / `handler`：不响应消息、不注册定时任务。
  */
@@ -27,16 +25,6 @@ export class AliasService extends plugin {
     this.list = service.list
     this.status = service.status
     this.reload = service.reload
-
-    // 装配即预热：首次建索引失败只降级，不阻断插件加载
-    try {
-      const st = service.status()
-      if (!st.ok) {
-        logger?.warn(`[Alias] 别名数据不可用（${st.error || '无数据'}），查询将一律返回未命中；请执行 pnpm sync 生成 data/alias.json`)
-      }
-    } catch (err) {
-      logger?.warn(`[Alias] 别名服务初始化失败（不影响其它插件）：${err?.message || err}`)
-    }
   }
 }
 

@@ -49,12 +49,35 @@ for (const file of appFiles) {
 // ---- modules 层不越界 ----
 {
   const serviceSrc = fs.readFileSync(path.join(pluginRoot, 'modules/AliasService.js'), 'utf8')
-  c.check('服务不写文件（无写入接口）', !/writeFileSync|appendFileSync|renameSync|mkdirSync/.test(serviceSrc))
+  c.check('服务不写任何文件（纯只读）', !/writeFileSync|appendFileSync|renameSync|mkdirSync|copyFileSync/.test(serviceSrc))
   c.check('服务不注册命令 / 任务', !/rule\s*:/.test(serviceSrc) && !/cron\s*:/.test(serviceSrc))
   c.check('服务不 import 框架 plugin 基类', !/lib\/plugins\/plugin\.js/.test(serviceSrc))
+  c.check('实例自定义别名只读本机文件、不回写', !/MIAO_CUSTOM_FILES/.test(serviceSrc) || !/writeFileSync/.test(serviceSrc))
+}
 
-  const hotSrc = fs.readFileSync(path.join(pluginRoot, 'modules/HotReload.js'), 'utf8')
-  c.check('热重载只读监听，不写数据', !/writeFileSync|renameSync/.test(hotSrc))
+// ---- 数据层只读，绝不写别的插件的目录 ----
+{
+  const sourcesSrc = fs.readFileSync(path.join(pluginRoot, 'model/AliasSources.js'), 'utf8')
+  c.check('数据层不含任何写入调用', !/writeFileSync|appendFileSync|renameSync|mkdirSync|rmSync|unlinkSync/.test(sourcesSrc))
+  c.check('数据层按 env 覆盖定位上游（套件可用）', /ALIAS_MIAO_DIR/.test(sourcesSrc) && /ALIAS_ZZZ_DIR/.test(sourcesSrc))
+}
+
+// ---- 不再存在的历史结构不得复活 ----
+{
+  const files = []
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === '.test-tmp' || entry.name === 'docs' || entry.name === '.git') continue
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) walk(full)
+      else files.push(path.relative(pluginRoot, full))
+    }
+  }
+  walk(pluginRoot)
+  c.check('不再有生成物 data/alias.json', !files.includes(path.join('data', 'alias.json')))
+  c.check('不再有生成物 data/source.json', !files.includes(path.join('data', 'source.json')))
+  c.check('不再有已废弃的 HotReload 模块', !files.some(f => f.includes('HotReload')))
+  c.check('数据文件只剩仓库自带的 aliases.json', files.filter(f => f.startsWith('data' + path.sep)).join(',') === path.join('data', 'aliases.json'))
 }
 
 c.finish()

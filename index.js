@@ -1,26 +1,19 @@
 /**
  * Alias-Plugin 入口
  *
- * 只做三件事：配置兜底初始化 → 日志头 → 装配 apps 层。
- * 不含任何业务逻辑：查询在 modules/，数据在读 model/，纯函数在 components/。
+ * 只做两件事：日志头 → 装配 apps 层。
+ * 不含任何业务逻辑：查询在 modules/，数据读在 model/，纯函数在 components/。
+ * 别名数据全部在运行期读本机（miao / ZZZ / 实例自定义），入口不做任何数据准备。
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { getPluginConfig } from './components/config.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 logger?.info('----Alias-Plugin----')
 logger?.info('[Alias] 初始化中...')
-
-// ---- 配置兜底（config.yaml 不存在时从 .example 复制；失败只告警）----
-try {
-  getPluginConfig()
-} catch (err) {
-  logger?.warn(`[Alias] 配置初始化失败，使用内置默认值：${err?.message || err}`)
-}
 
 // ---- 装配 apps 层 ----
 const appsDir = path.join(__dirname, 'apps')

@@ -1,6 +1,6 @@
-# 别名数据热重载
-reload:
-  # 是否监听 data/ 目录并在数据变更后自动重建索引
-  watch: true
-  # 文件事件防抖窗口（毫秒）
-  debounceMs: 500
+# Alias-Plugin 配置（当前无配置项）
+#
+# 别名数据全部运行期从本机读取：miao / ZZZ 预设 + data/aliases.json + 实例自定义 cfg，
+# 不做缓存、不联网、不注册命令，因此暂时没有可配项。
+# 需要配置项时按三层结构加：defSet/config.yaml（模板）→ config/config.yaml（运行时）
+# → config/config.yaml.example（参考）。

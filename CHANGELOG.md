@@ -1,24 +1,30 @@
 # Changelog
 
+## 0.2.0
+
+- **取消共享别名生成物**：`data/alias.json` / `data/source.json` / 同步脚本全部删除。miao 是基础插件、ZZZ 选装、实例自定义别名各实例不同，别名数据一律**运行期读本机**，不存在"生成一份分发给所有人"这件事。
+- 数据分三个**位置**：实例自定义（`miao-plugin/config/alias_{gs,sr}.cfg`，各实例私有）> 仓库自带（`data/aliases.json`）> miao / ZZZ 预设。
+- 档次收敛为两档：中文原名 > 外文原名（日文 / 韩文 / 英文原名同级）；取舍顺序固定为**先位置、后档次**，且限定在同一 `(游戏, 实体)` 内。
+- 上游读取改为**不按导出名取**（miao 六个文件的导出名混用 `alias`/`abbr`/`setAbbr`/`setAlias`/`artiAbbr`/`artiSetAbbr`/`aliasCfg`），改为合并文件内所有对象导出，`import()` 失败时回退文本解析。
+- **不做缓存**：每次查询重新读盘合成（约 782 个原名 / 3771 个关键词 / 77ms），点击即生效，不需要文件监听、也不会返回过期数据；`reload()` 语义等价于重新读一遍。
+- 实例自定义 cfg 按 miao 的语义解析：行首允许是原名或已有别名，解析不到的行跳过并计入 `status().unresolvedCustom`。
+- 对外接口全部改为 async：`lookup` / `variants` / `list` / `status` / `reload`；候选新增 `position` / `positionLabel`。
+- 回归套件重写为 6 套（`normalize` / `alias-sources` / `alias-index` / `service-api` / `app-contract` / `smoke-imports`），上游一律用 `test/.test-tmp/` 夹具，**绝不读写真实 miao / ZZZ 目录**。
+
 ## 0.1.1
 
 - 别名数据结构改为**纯边表**：`data/alias.json` 的条目只保留 `canonical / alias / game / entity`，去掉来源字段。
-- 优先级改为只按**名字档次**判定：中文原名（`zh-canonical`）> 外文原名（`xx-canonical`）；档次属于标准名（正反两行一致），取舍限定在同一 `(游戏, 实体)` 内，来源不参与任何判定。
+- 优先级改为只按**名字档次**判定：中文原名 > 外文原名；档次属于标准名（正反两行一致），取舍限定在同一 `(游戏, 实体)` 内。
 - `lookup` 的候选带 `tier` / `tierLabel` 并按档次排序；`matchedBy` 只表示本次按标准名还是别名命中。
-- `list` 改为**按标准名归组**（同一标准名只出现一次，别名为数组），不再吐重复的边行。
-- `status` 改为报标准名数 / 映射行数 / 各档次分布（`byTier` 合计 = `entries ÷ 2`），不再报来源占比。
+- `list` 改为**按标准名归组**（同一标准名只出现一次，别名为数组）。
 - 生成脚本排序去掉来源维度；`source.json` 的 `counts` 改为 `edges` / `canonical` / `customMergedWithUpstream`。
-- 回归套件补档次取舍、跨游戏隔离、归组与副本语义等断言（129 条）。
 
 ## 0.1.0
 
 - 新建 Alias-Plugin：TRSS-Yunzai 的公共别名服务，把原神 / 星铁 / 绝区零的角色、武器、圣遗物别名收在一处供其它插件查询。
-- 数据层：读取 miao-plugin 的 6 个别名文件与 ZZZ-Plugin 的 `defSet/alias.yaml`（均只读），与自维护别名合并生成 `data/alias.json` 与记录上游指纹的 `data/source.json`。
-- 自维护别名放 `data/custom.json`，与上游同名标准名时**合并别名串**而非整体覆盖，避免丢掉上游已维护的俗称。
-- 对外查询：`lookup`（`exact` / `ambiguous` / `none` 三态，歧义把候选全给出）、`variants`（关键词的全部写法）、`list`、`status`、`reload`。
+- 数据层：读取 miao-plugin 与 ZZZ-Plugin 的别名文件（均只读），与自维护别名合并。
+- 对外查询：`lookup` / `variants` / `list` / `status` / `reload`。
 - 归一化只处理「同一个词的不同写法」（空白、间隔号、包裹符号、大小写），保留 `{}` 花括号；不做命令前缀剥离、模糊匹配、目录匹配。
-- 降级：数据缺失、JSON 结构异常、条目字段非法一律返回「未命中」并告警，不抛错、不阻断其它插件加载。
-- 索引同步构建（无 await 窗口），避免并发首次查询读到半成品；`data/` 变更由目录与文件双监听防抖重建。
-- 数据生成脚本 `scripts/sync-alias.mjs`（确定性输出，`--check` 幂等比对，供 GitHub Action 使用）。
-- 回归套件 6 个（归一化、索引构建、数据读取、对外契约、分层契约、加载冒烟），任意 cwd 可跑、缺前置跳过。
-- 文档：`AGENTS.md` + `docs/`（架构、接口契约、数据与同步、测试、待办与规划），`defSet/` 与 `config/config.yaml.example` 提供配置三层结构。
+- 降级：数据缺失、结构异常、条目字段非法一律跳过并告警，不抛错、不阻断其它插件加载。
+- 回归套件 6 个，任意 cwd 可跑、缺前置跳过。
+- 文档：`AGENTS.md` + `docs/`（架构、接口契约、数据与同步、测试、待办与规划）。

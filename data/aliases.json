@@ -1,0 +1,23 @@
+{
+  "$comment": "本插件自维护的别名（由其他插件解耦并入，入库）。与 miao / ZZZ 的预设同名原名时合并别名；运行期由 model/AliasSources.js 读取。以后 GitHub Action 扒到的别名也写进这个文件的 aliases 数组。",
+  "version": 1,
+  "aliases": [
+    { "canonical": "旅行者", "alias": "空", "game": "gi", "entity": "character" },
+    { "canonical": "旅行者", "alias": "荧", "game": "gi", "entity": "character" },
+    { "canonical": "旅行者", "alias": "主角", "game": "gi", "entity": "character" },
+    { "canonical": "旅行者", "alias": "枪主", "game": "gi", "entity": "character" },
+    { "canonical": "旅行者", "alias": "男主", "game": "gi", "entity": "character" },
+    { "canonical": "旅行者", "alias": "女主", "game": "gi", "entity": "character" },
+    { "canonical": "雾切之回光", "alias": "雾切", "game": "gi", "entity": "weapon" },
+    { "canonical": "冰封迷途的勇士", "alias": "冰风迷途的勇士", "game": "gi", "entity": "artifact" },
+    { "canonical": "炽烈的炎之魔女", "alias": "火套", "game": "gi", "entity": "artifact" },
+    { "canonical": "{NICKNAME}", "alias": "开拓者", "game": "hsr", "entity": "character" },
+    { "canonical": "{NICKNAME}", "alias": "穹", "game": "hsr", "entity": "character" },
+    { "canonical": "{NICKNAME}", "alias": "星", "game": "hsr", "entity": "character" },
+    { "canonical": "{NICKNAME}", "alias": "主角", "game": "hsr", "entity": "character" },
+    { "canonical": "{NICKNAME}", "alias": "男主", "game": "hsr", "entity": "character" },
+    { "canonical": "{NICKNAME}", "alias": "女主", "game": "hsr", "entity": "character" },
+    { "canonical": "{NICKNAME}", "alias": "星穹列车开拓者", "game": "hsr", "entity": "character" },
+    { "canonical": "星见雅", "alias": "雅", "game": "zzz", "entity": "character" }
+  ]
+}
